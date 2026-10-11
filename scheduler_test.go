@@ -928,3 +928,63 @@ func TestPickRejectsAccountWithoutLongWindow(t *testing.T) {
 		})
 	}
 }
+
+func TestQuotaProtectionThresholdScheduling(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	cfg := DefaultConfig()
+	cfg.QuotaProtectionThreshold = 98.0
+	cfg.ProtectedAccounts = []string{"protected-vip"}
+
+	used98 := 98.0
+	resetIn5H := now.Add(5 * time.Hour)
+	fiveHourSec := int64(18000)
+
+	// Protected account at 98%
+	protAcc := weeklyAccount("protected-vip.json", 0, now.Add(7*24*time.Hour), false)
+	protAcc.Quota.FiveHour = &QuotaWindow{
+		Kind:               WindowFiveHour,
+		UsedPercent:        &used98,
+		LimitWindowSeconds: &fiveHourSec,
+		ResetAt:            resetIn5H,
+	}
+
+	// Normal account at 98%
+	normAcc := weeklyAccount("normal-user.json", 0, now.Add(7*24*time.Hour), false)
+	normAcc.Quota.FiveHour = &QuotaWindow{
+		Kind:               WindowFiveHour,
+		UsedPercent:        &used98,
+		LimitWindowSeconds: &fiveHourSec,
+		ResetAt:            resetIn5H,
+	}
+
+	// Protected account should be marked exhausted and unavailable
+	status, available, reason, _ := accountQueueState(protAcc, now, cfg)
+	if available || status != QueueStatusFiveHourExhausted || reason != "five_hour_protected" {
+		t.Fatalf("protected account state = %v/%v/%v, want exhausted/unavailable/five_hour_protected", status, available, reason)
+	}
+
+	// Normal account should STILL BE AVAILABLE (not exhausted until 100%)
+	statusNorm, availableNorm, reasonNorm, _ := accountQueueState(normAcc, now, cfg)
+	if !availableNorm || statusNorm != QueueStatusAvailable {
+		t.Fatalf("normal account state = %v/%v/%v, want available", statusNorm, availableNorm, reasonNorm)
+	}
+
+	// AccountView classification for protected account should be Excluded
+	viewProt := accountViewFromState(protAcc, cfg, now, nil)
+	if ClassifyAccount(viewProt, now) != Excluded {
+		t.Fatalf("protected account view should be Excluded, got %v", ClassifyAccount(viewProt, now))
+	}
+
+	// AccountView classification for normal account should be Preferred
+	viewNorm := accountViewFromState(normAcc, cfg, now, nil)
+	if ClassifyAccount(viewNorm, now) != Preferred {
+		t.Fatalf("normal account view should be Preferred, got %v", ClassifyAccount(viewNorm, now))
+	}
+
+	// After ResetAt passes, protected account should automatically recover to Preferred!
+	afterReset := resetIn5H.Add(1 * time.Minute)
+	viewRecovered := accountViewFromState(protAcc, cfg, afterReset, nil)
+	if ClassifyAccount(viewRecovered, afterReset) != Preferred {
+		t.Fatalf("protected account after reset should recover to Preferred, got %v", ClassifyAccount(viewRecovered, afterReset))
+	}
+}

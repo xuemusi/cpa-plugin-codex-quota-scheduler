@@ -180,7 +180,7 @@ func buildOrderedAccounts(req pluginapi.SchedulerPickRequest, snapshot StateSnap
 			continue
 		}
 
-		queueStatus, available, reason, sortTime := accountQueueState(account, now)
+		queueStatus, available, reason, sortTime := accountQueueState(account, now, snapshot.Config)
 		view := accountViewFromState(account, snapshot.Config, now, trials)
 		// The request's candidate priority is the live tier truth; the stored
 		// account priority can lag an admission update.
@@ -240,7 +240,11 @@ func accountAvailable(account AccountState, now time.Time) (bool, string) {
 	return available, reason
 }
 
-func accountQueueState(account AccountState, now time.Time) (QueueStatus, bool, string, time.Time) {
+func accountQueueState(account AccountState, now time.Time, configs ...Config) (QueueStatus, bool, string, time.Time) {
+	threshold := 100.0
+	if len(configs) > 0 {
+		threshold = AccountExhaustionThreshold(configs[0], account.AuthID, account.AuthIndex)
+	}
 	if account.Refresh.AuthFailure {
 		return QueueStatusUnavailable, false, "auth_failure", time.Time{}
 	}
@@ -265,8 +269,12 @@ func accountQueueState(account AccountState, now time.Time) (QueueStatus, bool, 
 		if account.Quota.LongWindow.ResetAt.IsZero() {
 			return QueueStatusUnavailable, false, "missing_weekly_reset", time.Time{}
 		}
-		if windowExhausted(account.Quota.LongWindow, now) {
-			return QueueStatusLongWindowExhausted, false, "weekly_exhausted", account.Quota.LongWindow.ResetAt
+		if windowExhaustedWithThreshold(account.Quota.LongWindow, threshold, now) {
+			reason := "weekly_exhausted"
+			if threshold < 100 {
+				reason = "weekly_protected"
+			}
+			return QueueStatusLongWindowExhausted, false, reason, account.Quota.LongWindow.ResetAt
 		}
 		if account.TemporaryExhausted && (account.TemporaryResetAt.IsZero() || account.TemporaryResetAt.After(now)) {
 			return QueueStatusFiveHourExhausted, false, "temporary_exhausted", account.TemporaryResetAt
@@ -275,8 +283,12 @@ func accountQueueState(account AccountState, now time.Time) (QueueStatus, bool, 
 			if account.Quota.FiveHour.ResetAt.IsZero() {
 				return QueueStatusUnavailable, false, "missing_five_hour_reset", time.Time{}
 			}
-			if windowExhausted(account.Quota.FiveHour, now) {
-				return QueueStatusFiveHourExhausted, false, "five_hour_exhausted", account.Quota.FiveHour.ResetAt
+			if windowExhaustedWithThreshold(account.Quota.FiveHour, threshold, now) {
+				reason := "five_hour_exhausted"
+				if threshold < 100 {
+					reason = "five_hour_protected"
+				}
+				return QueueStatusFiveHourExhausted, false, reason, account.Quota.FiveHour.ResetAt
 			}
 		}
 		return QueueStatusAvailable, true, "", account.Quota.LongWindow.ResetAt
@@ -287,8 +299,12 @@ func accountQueueState(account AccountState, now time.Time) (QueueStatus, bool, 
 		if account.Quota.LongWindow.ResetAt.IsZero() {
 			return QueueStatusUnavailable, false, "missing_monthly_reset", time.Time{}
 		}
-		if windowExhausted(account.Quota.LongWindow, now) {
-			return QueueStatusLongWindowExhausted, false, "monthly_exhausted", account.Quota.LongWindow.ResetAt
+		if windowExhaustedWithThreshold(account.Quota.LongWindow, threshold, now) {
+			reason := "monthly_exhausted"
+			if threshold < 100 {
+				reason = "monthly_protected"
+			}
+			return QueueStatusLongWindowExhausted, false, reason, account.Quota.LongWindow.ResetAt
 		}
 		if account.TemporaryExhausted && (account.TemporaryResetAt.IsZero() || account.TemporaryResetAt.After(now)) {
 			return QueueStatusFiveHourExhausted, false, "temporary_exhausted", account.TemporaryResetAt
@@ -297,8 +313,12 @@ func accountQueueState(account AccountState, now time.Time) (QueueStatus, bool, 
 			if account.Quota.FiveHour.ResetAt.IsZero() {
 				return QueueStatusUnavailable, false, "missing_five_hour_reset", time.Time{}
 			}
-			if windowExhausted(account.Quota.FiveHour, now) {
-				return QueueStatusFiveHourExhausted, false, "five_hour_exhausted", account.Quota.FiveHour.ResetAt
+			if windowExhaustedWithThreshold(account.Quota.FiveHour, threshold, now) {
+				reason := "five_hour_exhausted"
+				if threshold < 100 {
+					reason = "five_hour_protected"
+				}
+				return QueueStatusFiveHourExhausted, false, reason, account.Quota.FiveHour.ResetAt
 			}
 		}
 		return QueueStatusAvailable, true, "", account.Quota.LongWindow.ResetAt
@@ -330,7 +350,18 @@ func accountSortTime(account AccountState) time.Time {
 }
 
 func windowExhausted(window *QuotaWindow, now time.Time) bool {
-	if window == nil || !window.Exhausted {
+	return windowExhaustedWithThreshold(window, 100.0, now)
+}
+
+func windowExhaustedWithThreshold(window *QuotaWindow, threshold float64, now time.Time) bool {
+	if window == nil {
+		return false
+	}
+	exhausted := window.Exhausted
+	if window.UsedPercent != nil && *window.UsedPercent >= threshold {
+		exhausted = true
+	}
+	if !exhausted {
 		return false
 	}
 	return window.ResetAt.IsZero() || window.ResetAt.After(now)

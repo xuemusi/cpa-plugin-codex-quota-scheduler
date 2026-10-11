@@ -1181,6 +1181,30 @@ func TestSettingsPayloadIncludesResetProbeFlag(t *testing.T) {
 	}
 }
 
+func TestSettingsPayloadIncludesQuotaProtection(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.QuotaProtectionThreshold = 98.0
+	cfg.ProtectedAccounts = []string{"xms17189", "jing09928"}
+	payload := SettingsFromConfig(cfg)
+	if payload.QuotaProtectionThreshold != 98.0 {
+		t.Fatalf("QuotaProtectionThreshold = %v, want 98", payload.QuotaProtectionThreshold)
+	}
+	if len(payload.ProtectedAccounts) != 2 {
+		t.Fatalf("len(ProtectedAccounts) = %d, want 2", len(payload.ProtectedAccounts))
+	}
+
+	roundTrip, err := ConfigFromSettings(DefaultConfig(), payload)
+	if err != nil {
+		t.Fatalf("ConfigFromSettings returned error: %v", err)
+	}
+	if roundTrip.QuotaProtectionThreshold != 98.0 {
+		t.Fatalf("roundTrip QuotaProtectionThreshold = %v, want 98", roundTrip.QuotaProtectionThreshold)
+	}
+	if len(roundTrip.ProtectedAccounts) != 2 || roundTrip.ProtectedAccounts[0] != "xms17189" {
+		t.Fatalf("roundTrip ProtectedAccounts = %v", roundTrip.ProtectedAccounts)
+	}
+}
+
 func TestStatusPayloadIncludesRefreshFailureVisibility(t *testing.T) {
 	now := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
 	store := NewPluginState(DefaultConfig())

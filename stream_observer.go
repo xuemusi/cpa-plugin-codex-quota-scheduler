@@ -171,11 +171,15 @@ func applyObservedRateLimits(store *PluginState, authID, authIndex string, frame
 	if err := json.Unmarshal(payload, &event); err != nil || event.RateLimits == nil {
 		return
 	}
+	threshold := 100.0
+	if store != nil {
+		threshold = AccountExhaustionThreshold(store.Config(), authID, authIndex)
+	}
 	quota := ParsedQuota{}
-	if window := observedQuotaWindow(event.RateLimits.Primary, event.RateLimits, now); window != nil {
+	if window := observedQuotaWindow(event.RateLimits.Primary, event.RateLimits, threshold, now); window != nil {
 		quota.FiveHour = window
 	}
-	if window := observedQuotaWindow(event.RateLimits.Secondary, event.RateLimits, now); window != nil {
+	if window := observedQuotaWindow(event.RateLimits.Secondary, event.RateLimits, threshold, now); window != nil {
 		quota.LongWindow = window
 		quota.Family = familyForWindowMinutes(window.LimitWindowSeconds)
 	}
@@ -198,7 +202,7 @@ func sseEventData(frame []byte) []byte {
 	return nil
 }
 
-func observedQuotaWindow(window *codexRateLimitWindow, limits *codexRateLimitsPayload, now time.Time) *QuotaWindow {
+func observedQuotaWindow(window *codexRateLimitWindow, limits *codexRateLimitsPayload, threshold float64, now time.Time) *QuotaWindow {
 	if window == nil || window.UsedPercent == nil {
 		return nil
 	}
@@ -217,7 +221,7 @@ func observedQuotaWindow(window *codexRateLimitWindow, limits *codexRateLimitsPa
 		// Without a reset deadline the observation cannot drive scheduling.
 		return nil
 	}
-	if (limits.Allowed != nil && !*limits.Allowed) || (limits.LimitReached != nil && *limits.LimitReached) || *window.UsedPercent >= 100 {
+	if (limits.Allowed != nil && !*limits.Allowed) || (limits.LimitReached != nil && *limits.LimitReached) || *window.UsedPercent >= threshold {
 		out.Exhausted = true
 	}
 	return out
@@ -258,7 +262,8 @@ func applyObservedCodexHeaders(store *PluginState, record pluginapi.UsageRecord,
 	if store == nil || !strings.EqualFold(record.Provider, "codex") || record.Failed {
 		return
 	}
-	quota, ok := codexQuotaFromHeaders(record.ResponseHeaders, now)
+	threshold := AccountExhaustionThreshold(store.Config(), record.AuthID, record.AuthIndex)
+	quota, ok := codexQuotaFromHeaders(record.ResponseHeaders, threshold, now)
 	if !ok {
 		return
 	}
@@ -269,7 +274,7 @@ func applyObservedCodexHeaders(store *PluginState, record pluginapi.UsageRecord,
 
 // codexQuotaFromHeaders parses the normalized X-Codex-* header set into
 // quota windows. Field names mirror the host's ParseCodexQuotaEventHeaders.
-func codexQuotaFromHeaders(headers map[string][]string, now time.Time) (ParsedQuota, bool) {
+func codexQuotaFromHeaders(headers map[string][]string, threshold float64, now time.Time) (ParsedQuota, bool) {
 	if len(headers) == 0 {
 		return ParsedQuota{}, false
 	}
@@ -291,17 +296,17 @@ func codexQuotaFromHeaders(headers map[string][]string, now time.Time) (ParsedQu
 	limited := allowed == "false" || limitReached == "true"
 
 	quota := ParsedQuota{}
-	if window := quotaWindowFromHeaders(get, "X-Codex-Primary", limited, now); window != nil {
+	if window := quotaWindowFromHeaders(get, "X-Codex-Primary", limited, threshold, now); window != nil {
 		quota.FiveHour = window
 	}
-	if window := quotaWindowFromHeaders(get, "X-Codex-Secondary", limited, now); window != nil {
+	if window := quotaWindowFromHeaders(get, "X-Codex-Secondary", limited, threshold, now); window != nil {
 		quota.LongWindow = window
 		quota.Family = familyForWindowMinutes(window.LimitWindowSeconds)
 	}
 	return quota, quota.FiveHour != nil || quota.LongWindow != nil
 }
 
-func quotaWindowFromHeaders(get func(string) string, prefix string, limited bool, now time.Time) *QuotaWindow {
+func quotaWindowFromHeaders(get func(string) string, prefix string, limited bool, threshold float64, now time.Time) *QuotaWindow {
 	usedText := get(prefix + "-Used-Percent")
 	if usedText == "" {
 		return nil
@@ -332,7 +337,7 @@ func quotaWindowFromHeaders(get func(string) string, prefix string, limited bool
 	if window.ResetAt.IsZero() {
 		return nil
 	}
-	if limited || used >= 100 {
+	if limited || used >= threshold {
 		window.Exhausted = true
 	}
 	return window

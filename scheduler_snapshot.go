@@ -178,7 +178,7 @@ func accountViewFromState(a AccountState, cfg Config, now time.Time, trials *Tri
 	} else if now.Sub(a.LastSuccessAt) > cfg.QuotaRefreshInterval {
 		cache = CacheAging
 	}
-	exhausted, reset := accountExhaustion(a, now)
+	exhausted, reset := accountExhaustion(a, now, cfg)
 	trial := TrialNone
 	if trials != nil {
 		trial = trials.State(a.Instance, now)
@@ -212,11 +212,15 @@ func publishSchedulerState(state *PluginState, active map[string]struct{}, now t
 	_, snapshot.AdmissionVersion = state.CPAAdmissionVersioned()
 	PublishSchedulerSnapshot(snapshot)
 }
-func accountExhaustion(a AccountState, now time.Time) (bool, time.Time) {
-	if windowExhausted(a.Quota.LongWindow, now) {
+func accountExhaustion(a AccountState, now time.Time, configs ...Config) (bool, time.Time) {
+	threshold := 100.0
+	if len(configs) > 0 {
+		threshold = AccountExhaustionThreshold(configs[0], a.AuthID, a.AuthIndex)
+	}
+	if windowExhaustedWithThreshold(a.Quota.LongWindow, threshold, now) {
 		return true, a.Quota.LongWindow.ResetAt
 	}
-	if windowExhausted(a.Quota.FiveHour, now) {
+	if windowExhaustedWithThreshold(a.Quota.FiveHour, threshold, now) {
 		return true, a.Quota.FiveHour.ResetAt
 	}
 	return false, time.Time{}

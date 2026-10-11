@@ -67,6 +67,12 @@ type Config struct {
 	// files.
 	EnableManagedQuotaDisable bool
 	LifecycleEventLimit       int
+	// QuotaProtectionThreshold defines the maximum usage percentage (e.g. 98.0)
+	// before an account is marked exhausted/excluded. Default is 100.0 (no protection).
+	QuotaProtectionThreshold float64 `json:"quota_protection_threshold"`
+	// ProtectedAccounts filters which accounts apply QuotaProtectionThreshold.
+	// If empty and QuotaProtectionThreshold < 100, applies to all accounts.
+	ProtectedAccounts []string `json:"protected_accounts,omitempty"`
 
 	// Retry chain. RetryEnabled is the kill switch: when it is false every
 	// request keeps today's behavior. RetryChain is empty by default, which is
@@ -134,6 +140,8 @@ type rawConfig struct {
 	ScheduleAcrossPriorities        *bool  `yaml:"schedule_across_priorities"`
 	EnableManagedQuotaDisable       *bool  `yaml:"enable_managed_quota_disable"`
 	LifecycleEventLimit             *int   `yaml:"lifecycle_event_limit"`
+	QuotaProtectionThreshold        *float64 `yaml:"quota_protection_threshold"`
+	ProtectedAccounts               []string `yaml:"protected_accounts"`
 
 	RetryEnabled        *bool           `yaml:"retry_enabled"`
 	RetryShadow         *bool           `yaml:"retry_shadow"`
@@ -158,6 +166,8 @@ func DefaultConfig() Config {
 		EnableUsageFeedback:             true,
 		EnableResetProbe:                false,
 		MaxRefreshConcurrency:           1,
+		QuotaProtectionThreshold:        100.0,
+		ProtectedAccounts:               nil,
 		QuotaEndpoint:                   chatGPTQuotaEndpoint,
 		RefreshActiveWindow:             time.Hour,
 		RefreshAfterResetDelay:          time.Minute,
@@ -231,6 +241,10 @@ func NormalizeConfig(cfg Config) Config {
 	if cfg.LogRetention <= 0 {
 		cfg.LogRetention = defaults.LogRetention
 	}
+	if cfg.QuotaProtectionThreshold <= 0 || cfg.QuotaProtectionThreshold > 100 {
+		cfg.QuotaProtectionThreshold = defaults.QuotaProtectionThreshold
+	}
+	cfg.ProtectedAccounts = cleanStringSlice(cfg.ProtectedAccounts)
 	cfg.RetryChain = NormalizeRetryChain(cfg.RetryChain)
 	if cfg.RetryMaxAttempts <= 0 {
 		cfg.RetryMaxAttempts = defaults.RetryMaxAttempts
@@ -413,6 +427,15 @@ func DecodeConfig(raw []byte) (Config, error) {
 		}
 		cfg.LifecycleEventLimit = *decoded.LifecycleEventLimit
 	}
+	if decoded.QuotaProtectionThreshold != nil {
+		if *decoded.QuotaProtectionThreshold <= 0 || *decoded.QuotaProtectionThreshold > 100 {
+			return Config{}, fmt.Errorf("quota_protection_threshold must be between 1 and 100")
+		}
+		cfg.QuotaProtectionThreshold = *decoded.QuotaProtectionThreshold
+	}
+	if decoded.ProtectedAccounts != nil {
+		cfg.ProtectedAccounts = cleanStringSlice(decoded.ProtectedAccounts)
+	}
 	if decoded.RetryEnabled != nil {
 		cfg.RetryEnabled = *decoded.RetryEnabled
 	}
@@ -476,6 +499,47 @@ func DecodeConfig(raw []byte) (Config, error) {
 		cfg.RetryChain = chain
 	}
 	return NormalizeConfig(cfg), nil
+}
+
+func cleanStringSlice(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	res := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			res = append(res, trimmed)
+		}
+	}
+	return res
+}
+
+// IsAccountProtected reports whether the account matches configured protection rules.
+func IsAccountProtected(cfg Config, authID, authIndex string) bool {
+	if cfg.QuotaProtectionThreshold <= 0 || cfg.QuotaProtectionThreshold >= 100 {
+		return false
+	}
+	if len(cfg.ProtectedAccounts) == 0 {
+		return true
+	}
+	idLower := strings.ToLower(authID)
+	idxLower := strings.ToLower(authIndex)
+	for _, pattern := range cfg.ProtectedAccounts {
+		p := strings.ToLower(strings.TrimSpace(pattern))
+		if p != "" && (strings.Contains(idLower, p) || strings.Contains(idxLower, p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// AccountExhaustionThreshold returns the exhaustion threshold percentage for an account.
+func AccountExhaustionThreshold(cfg Config, authID, authIndex string) float64 {
+	if IsAccountProtected(cfg, authID, authIndex) {
+		return cfg.QuotaProtectionThreshold
+	}
+	return 100.0
 }
 
 // parseByteSize accepts "8388608" or a suffixed size such as "8MB" or "1.5GiB".

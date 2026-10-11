@@ -304,3 +304,37 @@ func TestPluginRegistrationDeclaresCapabilitiesAndFields(t *testing.T) {
 		t.Fatalf("capabilities = %#v, want scheduler, usage_plugin, management_api", reg.Capabilities)
 	}
 }
+
+func TestQuotaProtectionThresholdConfig(t *testing.T) {
+	yamlData := []byte(`
+quota_protection_threshold: 98
+protected_accounts:
+  - xms17189
+  - jing09928
+`)
+	cfg, err := DecodeConfig(yamlData)
+	if err != nil {
+		t.Fatalf("DecodeConfig failed: %v", err)
+	}
+	if cfg.QuotaProtectionThreshold != 98 {
+		t.Fatalf("QuotaProtectionThreshold = %v, want 98", cfg.QuotaProtectionThreshold)
+	}
+	if len(cfg.ProtectedAccounts) != 2 {
+		t.Fatalf("len(ProtectedAccounts) = %d, want 2", len(cfg.ProtectedAccounts))
+	}
+	if !IsAccountProtected(cfg, "codex-48f8ef7d-xms17189@gmail.com-team.json", "") {
+		t.Fatal("xms17189 should be protected")
+	}
+	if !IsAccountProtected(cfg, "codex-48f8ef7d-jing09928@gmail.com-team.json", "") {
+		t.Fatal("jing09928 should be protected")
+	}
+	if IsAccountProtected(cfg, "codex-normal-user@gmail.com.json", "") {
+		t.Fatal("normal user should NOT be protected")
+	}
+	if AccountExhaustionThreshold(cfg, "codex-48f8ef7d-xms17189@gmail.com-team.json", "") != 98 {
+		t.Fatal("protected account threshold should be 98")
+	}
+	if AccountExhaustionThreshold(cfg, "codex-normal-user@gmail.com.json", "") != 100 {
+		t.Fatal("normal account threshold should be 100")
+	}
+}
