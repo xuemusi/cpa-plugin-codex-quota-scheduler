@@ -334,12 +334,22 @@ func (s *PluginState) RecordAccountSuccess(authID, authIndex string, now time.Ti
 	if !ok {
 		return AccountState{}, false
 	}
+	threshold := AccountExhaustionThreshold(NormalizeConfig(s.cfg), account.AuthID, account.AuthIndex)
+	quotaExceeded := false
+	if threshold < 100 {
+		if (account.Quota.FiveHour != nil && account.Quota.FiveHour.UsedPercent != nil && *account.Quota.FiveHour.UsedPercent >= threshold) ||
+			(account.Quota.LongWindow != nil && account.Quota.LongWindow.UsedPercent != nil && *account.Quota.LongWindow.UsedPercent >= threshold) {
+			quotaExceeded = true
+		}
+	}
 	// A real successful request is the strongest recovery evidence: upstream
 	// quota percentages alone can misreport recovery (issue #11 negative
 	// control), so the temporary-exhaustion marker is only reconciled here and
 	// on operator-confirmed manual refreshes, never from a bare quota read.
-	account.TemporaryExhausted = false
-	account.TemporaryResetAt = time.Time{}
+	if !quotaExceeded {
+		account.TemporaryExhausted = false
+		account.TemporaryResetAt = time.Time{}
+	}
 	applyCircuitSuccess(&account, NormalizeConfig(s.cfg), now)
 	s.accounts[key] = account
 	return cloneAccountState(account), true
@@ -420,6 +430,21 @@ func (s *PluginState) ObserveAccountQuota(authID, authIndex string, quota Parsed
 	account.LastSuccessAt = now
 	account.LastObservedAt = now
 	account.Stale = false
+	// If the account has reached its protection threshold, mark it temporarily exhausted
+	threshold := AccountExhaustionThreshold(NormalizeConfig(s.cfg), account.AuthID, account.AuthIndex)
+	if threshold < 100 {
+		isFiveHourProtected := account.Quota.FiveHour != nil && account.Quota.FiveHour.UsedPercent != nil && *account.Quota.FiveHour.UsedPercent >= threshold
+		isLongProtected := account.Quota.LongWindow != nil && account.Quota.LongWindow.UsedPercent != nil && *account.Quota.LongWindow.UsedPercent >= threshold
+		if isFiveHourProtected || isLongProtected {
+			resetAt := now.Add(5 * time.Hour)
+			if account.Quota.FiveHour != nil && !account.Quota.FiveHour.ResetAt.IsZero() {
+				resetAt = account.Quota.FiveHour.ResetAt
+			} else if account.Quota.LongWindow != nil && !account.Quota.LongWindow.ResetAt.IsZero() {
+				resetAt = account.Quota.LongWindow.ResetAt
+			}
+			markTemporaryExhausted(&account, resetAt, "quota_protection_threshold_reached")
+		}
+	}
 	if account.TemporaryExhausted && quotaRefreshConfirmsReset(account, now) {
 		account.TemporaryExhausted = false
 		account.TemporaryResetAt = time.Time{}
@@ -427,6 +452,16 @@ func (s *PluginState) ObserveAccountQuota(authID, authIndex string, quota Parsed
 	}
 	s.accounts[key] = account
 	return cloneAccountState(account), true
+}
+
+func (s *PluginState) FindAccount(authID, authIndex string) (AccountState, bool) {
+	if s == nil {
+		return AccountState{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, account, ok := s.findAccountLocked(authID, authIndex)
+	return cloneAccountState(account), ok
 }
 
 func (s *PluginState) findAccountLocked(authID, authIndex string) (string, AccountState, bool) {

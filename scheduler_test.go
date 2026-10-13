@@ -987,4 +987,21 @@ func TestQuotaProtectionThresholdScheduling(t *testing.T) {
 	if ClassifyAccount(viewRecovered, afterReset) != Preferred {
 		t.Fatalf("protected account after reset should recover to Preferred, got %v", ClassifyAccount(viewRecovered, afterReset))
 	}
+
+	// Test PickCodexAccount does NOT fallback to CPA builtin when protected account is cooling
+	store := NewPluginState(cfg)
+	store.UpsertQuota(protAcc)
+	pickReq := pluginapi.SchedulerPickRequest{
+		Provider: "codex",
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "protected-vip.json", Provider: "codex", Priority: 0},
+		},
+	}
+	decision := PickCodexAccount(pickReq, store.Snapshot(now), now)
+	if decision.DelegateBuiltin != "" {
+		t.Fatalf("PickDecision should not delegate to builtin when protected account is cooling, got %q", decision.DelegateBuiltin)
+	}
+	if decision.Reason != "no_selectable_account" {
+		t.Fatalf("PickDecision reason = %q, want no_selectable_account", decision.Reason)
+	}
 }

@@ -163,6 +163,11 @@ func applyObservedRateLimits(store *PluginState, authID, authIndex string, frame
 	if authID == "" && authIndex == "" {
 		return
 	}
+	if authID == "" && authIndex != "" && store != nil {
+		if acc, ok := store.FindAccount("", authIndex); ok {
+			authID = acc.AuthID
+		}
+	}
 	payload := sseEventData(frame)
 	if len(payload) == 0 {
 		return
@@ -262,12 +267,18 @@ func applyObservedCodexHeaders(store *PluginState, record pluginapi.UsageRecord,
 	if store == nil || !strings.EqualFold(record.Provider, "codex") || record.Failed {
 		return
 	}
-	threshold := AccountExhaustionThreshold(store.Config(), record.AuthID, record.AuthIndex)
+	authID := record.AuthID
+	if authID == "" && record.AuthIndex != "" {
+		if acc, ok := store.FindAccount("", record.AuthIndex); ok {
+			authID = acc.AuthID
+		}
+	}
+	threshold := AccountExhaustionThreshold(store.Config(), authID, record.AuthIndex)
 	quota, ok := codexQuotaFromHeaders(record.ResponseHeaders, threshold, now)
 	if !ok {
 		return
 	}
-	if _, observed := store.ObserveAccountQuota(record.AuthID, record.AuthIndex, quota, now); observed {
+	if _, observed := store.ObserveAccountQuota(authID, record.AuthIndex, quota, now); observed {
 		publishObservedSchedulerState()
 	}
 }

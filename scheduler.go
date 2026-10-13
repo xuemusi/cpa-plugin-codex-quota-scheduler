@@ -109,7 +109,7 @@ func PickCodexAccount(req pluginapi.SchedulerPickRequest, snapshot StateSnapshot
 		}
 	}
 
-	if snapshot.Config.Fallback == FallbackFillFirst {
+	if snapshot.Config.Fallback == FallbackFillFirst && !hasProtectedCandidateInCooldown(ordered, snapshot.Config) {
 		return PickDecision{
 			Handled:         true,
 			DelegateBuiltin: pluginapi.SchedulerBuiltinFillFirst,
@@ -118,6 +118,16 @@ func PickCodexAccount(req pluginapi.SchedulerPickRequest, snapshot StateSnapshot
 		}
 	}
 	return PickDecision{Reason: "no_selectable_account", Ordered: ordered}
+}
+
+func hasProtectedCandidateInCooldown(ordered []ScheduledAccount, cfg Config) bool {
+	for _, acc := range ordered {
+		threshold := AccountExhaustionThreshold(cfg, acc.AuthID, "")
+		if threshold < 100 && !acc.Available {
+			return true
+		}
+	}
+	return false
 }
 
 func BuildOrderedAccounts(req pluginapi.SchedulerPickRequest, snapshot StateSnapshot, now time.Time) []ScheduledAccount {
